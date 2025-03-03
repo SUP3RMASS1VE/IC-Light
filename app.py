@@ -925,7 +925,7 @@ h1 {
 
 /* Make the main title extra funky */
 #app-title {
-    font-size: 2.0em !important;
+    font-size: 1.5em !important;
     background: linear-gradient(90deg, #ff00ff, #00ffcc);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
@@ -1034,4 +1034,4 @@ with block:
                 bg_gallery_tab2.select(bg_gallery_selected, inputs=bg_gallery_tab2, outputs=input_bg_tab2)
 
 # Launch the app
-block.launch(server_name='0.0.0.0', quiet=True, show_error=False)
+block.launch(server_name='127.0.0.1', quiet=True, show_error=False)
