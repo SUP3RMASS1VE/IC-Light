@@ -226,79 +226,136 @@ def resize_without_crop(image, target_width, target_height):
 
 @torch.inference_mode()
 def run_rmbg(img, sigma=0.0):
-    H, W, C = img.shape
-    assert C == 3
-    k = (256.0 / float(H * W)) ** 0.5
-    feed = resize_without_crop(img, int(64 * round(W * k)), int(64 * round(H * k)))
-    feed = numpy2pytorch([feed]).to(device=device, dtype=torch.float32)
-    alpha = rmbg(feed)[0][0]
-    alpha = torch.nn.functional.interpolate(alpha, size=(H, W), mode="bilinear")
-    alpha = alpha.movedim(1, -1)[0]
-    alpha = alpha.detach().float().cpu().numpy().clip(0, 1)
-    result = 127 + (img.astype(np.float32) - 127 + sigma) * alpha
-    return result.clip(0, 255).astype(np.uint8), alpha
+    try:
+        H, W, C = img.shape
+        assert C == 3
+        k = (256.0 / float(H * W)) ** 0.5
+        feed = resize_without_crop(img, int(64 * round(W * k)), int(64 * round(H * k)))
+        feed = numpy2pytorch([feed]).to(device=device, dtype=torch.float32)
+        alpha = rmbg(feed)[0][0]
+        alpha = torch.nn.functional.interpolate(alpha, size=(H, W), mode="bilinear")
+        alpha = alpha.movedim(1, -1)[0]
+        alpha = alpha.detach().float().cpu().numpy().clip(0, 1)
+        result = 127 + (img.astype(np.float32) - 127 + sigma) * alpha
+        return result.clip(0, 255).astype(np.uint8), alpha
+    except Exception as e:
+        print(f"Error in run_rmbg: {str(e)}")
+        # Return the original image and a blank alpha mask
+        return img, np.ones((img.shape[0], img.shape[1]), dtype=np.float32)
 
 
 @torch.inference_mode()
 def process(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source):
-    bg_source = BGSource(bg_source)
-    input_bg = None
+    try:
+        bg_source = BGSource(bg_source)
+        input_bg = None
 
-    if bg_source == BGSource.NONE:
-        pass
-    elif bg_source == BGSource.LEFT:
-        gradient = np.linspace(255, 0, image_width)
-        image = np.tile(gradient, (image_height, 1))
-        input_bg = np.stack((image,) * 3, axis=-1).astype(np.uint8)
-    elif bg_source == BGSource.RIGHT:
-        gradient = np.linspace(0, 255, image_width)
-        image = np.tile(gradient, (image_height, 1))
-        input_bg = np.stack((image,) * 3, axis=-1).astype(np.uint8)
-    elif bg_source == BGSource.TOP:
-        gradient = np.linspace(255, 0, image_height)[:, None]
-        image = np.tile(gradient, (1, image_width))
-        input_bg = np.stack((image,) * 3, axis=-1).astype(np.uint8)
-    elif bg_source == BGSource.BOTTOM:
-        gradient = np.linspace(0, 255, image_height)[:, None]
-        image = np.tile(gradient, (1, image_width))
-        input_bg = np.stack((image,) * 3, axis=-1).astype(np.uint8)
-    else:
-        raise 'Wrong initial latent!'
+        if bg_source == BGSource.NONE:
+            pass
+        elif bg_source == BGSource.LEFT:
+            gradient = np.linspace(255, 0, image_width)
+            image = np.tile(gradient, (image_height, 1))
+            input_bg = np.stack((image,) * 3, axis=-1).astype(np.uint8)
+        elif bg_source == BGSource.RIGHT:
+            gradient = np.linspace(0, 255, image_width)
+            image = np.tile(gradient, (image_height, 1))
+            input_bg = np.stack((image,) * 3, axis=-1).astype(np.uint8)
+        elif bg_source == BGSource.TOP:
+            gradient = np.linspace(255, 0, image_height)[:, None]
+            image = np.tile(gradient, (1, image_width))
+            input_bg = np.stack((image,) * 3, axis=-1).astype(np.uint8)
+        elif bg_source == BGSource.BOTTOM:
+            gradient = np.linspace(0, 255, image_height)[:, None]
+            image = np.tile(gradient, (1, image_width))
+            input_bg = np.stack((image,) * 3, axis=-1).astype(np.uint8)
+        else:
+            # Handle unexpected bg_source values gracefully
+            print(f"Warning: Unexpected bg_source value: {bg_source}. Using None instead.")
+            input_bg = None
 
-    rng = torch.Generator(device=device).manual_seed(int(seed))
+        rng = torch.Generator(device=device).manual_seed(int(seed))
 
-    fg = resize_and_center_crop(input_fg, image_width, image_height)
+        fg = resize_and_center_crop(input_fg, image_width, image_height)
 
-    concat_conds = numpy2pytorch([fg]).to(device=vae.device, dtype=vae.dtype)
-    concat_conds = vae.encode(concat_conds).latent_dist.mode() * vae.config.scaling_factor
+        concat_conds = numpy2pytorch([fg]).to(device=vae.device, dtype=vae.dtype)
+        concat_conds = vae.encode(concat_conds).latent_dist.mode() * vae.config.scaling_factor
 
-    conds, unconds = encode_prompt_pair(positive_prompt=prompt + ', ' + a_prompt, negative_prompt=n_prompt)
+        conds, unconds = encode_prompt_pair(positive_prompt=prompt + ', ' + a_prompt, negative_prompt=n_prompt)
 
-    if input_bg is None:
-        latents = t2i_pipe(
-            prompt_embeds=conds,
-            negative_prompt_embeds=unconds,
-            width=image_width,
-            height=image_height,
-            num_inference_steps=steps,
-            num_images_per_prompt=num_samples,
-            generator=rng,
-            output_type='latent',
-            guidance_scale=cfg,
-            cross_attention_kwargs={'concat_conds': concat_conds},
-        ).images.to(vae.dtype) / vae.config.scaling_factor
-    else:
-        bg = resize_and_center_crop(input_bg, image_width, image_height)
-        bg_latent = numpy2pytorch([bg]).to(device=vae.device, dtype=vae.dtype)
-        bg_latent = vae.encode(bg_latent).latent_dist.mode() * vae.config.scaling_factor
+        if input_bg is None:
+            latents = t2i_pipe(
+                prompt_embeds=conds,
+                negative_prompt_embeds=unconds,
+                width=image_width,
+                height=image_height,
+                num_inference_steps=steps,
+                num_images_per_prompt=num_samples,
+                generator=rng,
+                output_type='latent',
+                guidance_scale=cfg,
+                cross_attention_kwargs={'concat_conds': concat_conds},
+            ).images.to(vae.dtype) / vae.config.scaling_factor
+        else:
+            try:
+                bg = resize_and_center_crop(input_bg, image_width, image_height)
+                bg_latent = numpy2pytorch([bg]).to(device=vae.device, dtype=vae.dtype)
+                bg_latent = vae.encode(bg_latent).latent_dist.mode() * vae.config.scaling_factor
+                latents = i2i_pipe(
+                    image=bg_latent,
+                    strength=lowres_denoise,
+                    prompt_embeds=conds,
+                    negative_prompt_embeds=unconds,
+                    width=image_width,
+                    height=image_height,
+                    num_inference_steps=int(round(steps / lowres_denoise)),
+                    num_images_per_prompt=num_samples,
+                    generator=rng,
+                    output_type='latent',
+                    guidance_scale=cfg,
+                    cross_attention_kwargs={'concat_conds': concat_conds},
+                ).images.to(vae.dtype) / vae.config.scaling_factor
+            except Exception as e:
+                print(f"Error using background: {str(e)}. Falling back to no background.")
+                # Fall back to no background if there's an error
+                latents = t2i_pipe(
+                    prompt_embeds=conds,
+                    negative_prompt_embeds=unconds,
+                    width=image_width,
+                    height=image_height,
+                    num_inference_steps=steps,
+                    num_images_per_prompt=num_samples,
+                    generator=rng,
+                    output_type='latent',
+                    guidance_scale=cfg,
+                    cross_attention_kwargs={'concat_conds': concat_conds},
+                ).images.to(vae.dtype) / vae.config.scaling_factor
+
+        pixels = vae.decode(latents).sample
+        pixels = pytorch2numpy(pixels)
+        pixels = [resize_without_crop(
+            image=p,
+            target_width=int(round(image_width * highres_scale / 64.0) * 64),
+            target_height=int(round(image_height * highres_scale / 64.0) * 64))
+        for p in pixels]
+
+        pixels = numpy2pytorch(pixels).to(device=vae.device, dtype=vae.dtype)
+        latents = vae.encode(pixels).latent_dist.mode() * vae.config.scaling_factor
+        latents = latents.to(device=unet.device, dtype=unet.dtype)
+
+        image_height, image_width = latents.shape[2] * 8, latents.shape[3] * 8
+
+        fg = resize_and_center_crop(input_fg, image_width, image_height)
+        concat_conds = numpy2pytorch([fg]).to(device=vae.device, dtype=vae.dtype)
+        concat_conds = vae.encode(concat_conds).latent_dist.mode() * vae.config.scaling_factor
+
         latents = i2i_pipe(
-            image=bg_latent,
-            strength=lowres_denoise,
+            image=latents,
+            strength=highres_denoise,
             prompt_embeds=conds,
             negative_prompt_embeds=unconds,
             width=image_width,
             height=image_height,
-            num_inference_steps=int(round(steps / lowres_denoise)),
+            num_inference_steps=int(round(steps / highres_denoise)),
             num_images_per_prompt=num_samples,
             generator=rng,
             output_type='latent',
@@ -306,49 +363,38 @@ def process(input_fg, prompt, image_width, image_height, num_samples, seed, step
             cross_attention_kwargs={'concat_conds': concat_conds},
         ).images.to(vae.dtype) / vae.config.scaling_factor
 
-    pixels = vae.decode(latents).sample
-    pixels = pytorch2numpy(pixels)
-    pixels = [resize_without_crop(
-        image=p,
-        target_width=int(round(image_width * highres_scale / 64.0) * 64),
-        target_height=int(round(image_height * highres_scale / 64.0) * 64))
-    for p in pixels]
+        pixels = vae.decode(latents).sample
 
-    pixels = numpy2pytorch(pixels).to(device=vae.device, dtype=vae.dtype)
-    latents = vae.encode(pixels).latent_dist.mode() * vae.config.scaling_factor
-    latents = latents.to(device=unet.device, dtype=unet.dtype)
-
-    image_height, image_width = latents.shape[2] * 8, latents.shape[3] * 8
-
-    fg = resize_and_center_crop(input_fg, image_width, image_height)
-    concat_conds = numpy2pytorch([fg]).to(device=vae.device, dtype=vae.dtype)
-    concat_conds = vae.encode(concat_conds).latent_dist.mode() * vae.config.scaling_factor
-
-    latents = i2i_pipe(
-        image=latents,
-        strength=highres_denoise,
-        prompt_embeds=conds,
-        negative_prompt_embeds=unconds,
-        width=image_width,
-        height=image_height,
-        num_inference_steps=int(round(steps / highres_denoise)),
-        num_images_per_prompt=num_samples,
-        generator=rng,
-        output_type='latent',
-        guidance_scale=cfg,
-        cross_attention_kwargs={'concat_conds': concat_conds},
-    ).images.to(vae.dtype) / vae.config.scaling_factor
-
-    pixels = vae.decode(latents).sample
-
-    return pytorch2numpy(pixels)
+        return pytorch2numpy(pixels)
+    except Exception as e:
+        print(f"Error in process function: {str(e)}")
+        # Return a blank image as a fallback
+        return [np.ones((image_height, image_width, 3), dtype=np.uint8) * 255]
 
 
 @torch.inference_mode()
 def process_relight(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source):
-    input_fg, matting = run_rmbg(input_fg)
-    results = process(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source)
-    return input_fg, results
+    try:
+        # Check if input_fg is None or empty
+        if input_fg is None or not isinstance(input_fg, np.ndarray):
+            raise ValueError("Please upload an image first")
+        
+        # Check if input_fg has the right shape and type
+        if len(input_fg.shape) != 3 or input_fg.shape[2] != 3:
+            raise ValueError("Input image must be a color image (RGB)")
+        
+        input_fg, matting = run_rmbg(input_fg)
+        results = process(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source)
+        return input_fg, results
+    except Exception as e:
+        print(f"Error in process_relight: {str(e)}")
+        # Return the original image and an error message
+        if input_fg is not None and isinstance(input_fg, np.ndarray):
+            return input_fg, None
+        else:
+            # Create a blank image with error message
+            error_img = np.ones((400, 600, 3), dtype=np.uint8) * 255
+            return error_img, None
 
 
 quick_prompts = [
