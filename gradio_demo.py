@@ -5,6 +5,14 @@ import numpy as np
 import torch
 import safetensors.torch as sf
 import db_examples
+import warnings
+
+# Suppress warnings
+warnings.filterwarnings("ignore")
+# Suppress specific PyTorch warnings
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "garbage_collection_threshold:0.6,max_split_size_mb:128"
+# Suppress Gradio warnings
+os.environ["GRADIO_ANALYTICS_ENABLED"] = "False"
 
 from PIL import Image
 from diffusers import StableDiffusionPipeline, StableDiffusionImg2ImgPipeline
@@ -377,57 +385,144 @@ class BGSource(Enum):
     BOTTOM = "Bottom Light"
 
 
-block = gr.Blocks().queue()
+# Custom CSS for funky theme
+custom_css = """
+:root {
+    --main-bg-color: #1a0033;
+    --secondary-bg-color: #330066;
+    --accent-color: #ff00ff;
+    --text-color: #f0f0ff;
+    --border-color: #8800ff;
+}
+
+body {
+    background: linear-gradient(135deg, var(--main-bg-color), var(--secondary-bg-color));
+    color: var(--text-color);
+}
+
+.gradio-container {
+    max-width: 100% !important;
+}
+
+.gr-button {
+    background: linear-gradient(90deg, #ff00ff, #00ffff) !important;
+    border: none !important;
+    color: black !important;
+    font-weight: bold !important;
+    font-size: 1.2em !important;
+    transition: all 0.3s ease !important;
+    transform: scale(1) !important;
+    border-radius: 10px !important;
+    box-shadow: 0 0 15px rgba(255, 0, 255, 0.5) !important;
+}
+
+.gr-button:hover {
+    transform: scale(1.05) !important;
+    box-shadow: 0 0 20px rgba(255, 0, 255, 0.8) !important;
+}
+
+.gr-form {
+    border: 2px solid var(--border-color) !important;
+    border-radius: 15px !important;
+    box-shadow: 0 0 20px rgba(136, 0, 255, 0.3) !important;
+    background-color: rgba(26, 0, 51, 0.7) !important;
+    padding: 20px !important;
+}
+
+.gr-input, .gr-textarea, .gr-dropdown {
+    background-color: rgba(51, 0, 102, 0.5) !important;
+    border: 2px solid var(--border-color) !important;
+    color: var(--text-color) !important;
+    border-radius: 10px !important;
+}
+
+.gr-input:focus, .gr-textarea:focus {
+    border-color: var(--accent-color) !important;
+    box-shadow: 0 0 10px rgba(255, 0, 255, 0.5) !important;
+}
+
+.gr-slider {
+    accent-color: var(--accent-color) !important;
+}
+
+.gr-slider-value {
+    color: var(--accent-color) !important;
+}
+
+.gr-accordion {
+    border: 2px solid var(--border-color) !important;
+    border-radius: 10px !important;
+    background-color: rgba(51, 0, 102, 0.3) !important;
+}
+
+.gr-radio {
+    accent-color: var(--accent-color) !important;
+}
+
+h1, h2, h3 {
+    color: #00ffff !important;
+    text-shadow: 0 0 10px rgba(0, 255, 255, 0.5) !important;
+    font-weight: bold !important;
+}
+
+.gr-gallery {
+    border: 2px solid var(--border-color) !important;
+    border-radius: 15px !important;
+    background-color: rgba(26, 0, 51, 0.5) !important;
+}
+
+.gr-label {
+    color: #00ffff !important;
+    font-weight: bold !important;
+}
+"""
+
+# Use a simple theme that works with Gradio 3.41.2
+block = gr.Blocks(css=custom_css).queue()
 with block:
     with gr.Row():
-        gr.Markdown("## IC-Light (Relighting with Foreground Condition)")
+        gr.Markdown("# ✨ IC-Light Funky Relighting Studio ✨")
     with gr.Row():
         with gr.Column():
             with gr.Row():
-                input_fg = gr.Image(source='upload', type="numpy", label="Image", height=480)
+                input_fg = gr.Image(source='upload', type="numpy", label="Upload Your Image", height=480)
                 output_bg = gr.Image(type="numpy", label="Preprocessed Foreground", height=480)
-            prompt = gr.Textbox(label="Prompt")
+            prompt = gr.Textbox(label="✨ Enter Your Magical Prompt ✨", placeholder="Describe the lighting you want...")
             bg_source = gr.Radio(choices=[e.value for e in BGSource],
                                  value=BGSource.NONE.value,
-                                 label="Lighting Preference (Initial Latent)", type='value')
-            example_quick_subjects = gr.Dataset(samples=quick_subjects, label='Subject Quick List', samples_per_page=1000, components=[prompt])
-            example_quick_prompts = gr.Dataset(samples=quick_prompts, label='Lighting Quick List', samples_per_page=1000, components=[prompt])
-            relight_button = gr.Button(value="Relight")
+                                 label="🌈 Lighting Direction 🌈", type='value')
+            
+            # Keep the quick prompt datasets but with funky labels
+            example_quick_subjects = gr.Dataset(samples=quick_subjects, label='🧙‍♂️ Magic Subject Suggestions 🧙‍♀️', samples_per_page=1000, components=[prompt])
+            example_quick_prompts = gr.Dataset(samples=quick_prompts, label='💫 Funky Lighting Ideas 💫', samples_per_page=1000, components=[prompt])
+            
+            relight_button = gr.Button(value="✨ TRANSFORM MY IMAGE ✨")
 
             with gr.Group():
                 with gr.Row():
-                    num_samples = gr.Slider(label="Images", minimum=1, maximum=12, value=1, step=1)
-                    seed = gr.Number(label="Seed", value=12345, precision=0)
+                    num_samples = gr.Slider(label="Number of Magic Images ✨", minimum=1, maximum=12, value=1, step=1)
+                    seed = gr.Number(label="Magic Seed 🔮", value=12345, precision=0)
 
                 with gr.Row():
-                    image_width = gr.Slider(label="Image Width", minimum=256, maximum=1024, value=512, step=64)
-                    image_height = gr.Slider(label="Image Height", minimum=256, maximum=1024, value=640, step=64)
+                    image_width = gr.Slider(label="Image Width 📏", minimum=256, maximum=1024, value=512, step=64)
+                    image_height = gr.Slider(label="Image Height 📏", minimum=256, maximum=1024, value=640, step=64)
 
-            with gr.Accordion("Advanced options", open=False):
-                steps = gr.Slider(label="Steps", minimum=1, maximum=100, value=25, step=1)
-                cfg = gr.Slider(label="CFG Scale", minimum=1.0, maximum=32.0, value=2, step=0.01)
-                lowres_denoise = gr.Slider(label="Lowres Denoise (for initial latent)", minimum=0.1, maximum=1.0, value=0.9, step=0.01)
-                highres_scale = gr.Slider(label="Highres Scale", minimum=1.0, maximum=3.0, value=1.5, step=0.01)
-                highres_denoise = gr.Slider(label="Highres Denoise", minimum=0.1, maximum=1.0, value=0.5, step=0.01)
-                a_prompt = gr.Textbox(label="Added Prompt", value='best quality')
-                n_prompt = gr.Textbox(label="Negative Prompt", value='lowres, bad anatomy, bad hands, cropped, worst quality')
+            with gr.Accordion("🔮 Advanced Magic Options 🔮", open=False):
+                steps = gr.Slider(label="Magic Steps ✨", minimum=1, maximum=100, value=25, step=1)
+                cfg = gr.Slider(label="Magic Power Level 💪", minimum=1.0, maximum=32.0, value=2, step=0.01)
+                lowres_denoise = gr.Slider(label="Initial Magic Strength 🧙‍♂️", minimum=0.1, maximum=1.0, value=0.9, step=0.01)
+                highres_scale = gr.Slider(label="Magic Enlargement ✨", minimum=1.0, maximum=3.0, value=1.5, step=0.01)
+                highres_denoise = gr.Slider(label="Final Magic Strength 🧙‍♀️", minimum=0.1, maximum=1.0, value=0.5, step=0.01)
+                a_prompt = gr.Textbox(label="Magic Enhancer ✨", value='best quality')
+                n_prompt = gr.Textbox(label="Magic Repellent 🛡️", value='lowres, bad anatomy, bad hands, cropped, worst quality')
         with gr.Column():
-            result_gallery = gr.Gallery(height=832, object_fit='contain', label='Outputs')
-    with gr.Row():
-        dummy_image_for_outputs = gr.Image(visible=False, label='Result')
-        gr.Examples(
-            fn=lambda *args: ([args[-1]], None),
-            examples=db_examples.foreground_conditioned_examples,
-            inputs=[
-                input_fg, prompt, bg_source, image_width, image_height, seed, dummy_image_for_outputs
-            ],
-            outputs=[result_gallery, output_bg],
-            run_on_click=True, examples_per_page=1024
-        )
+            result_gallery = gr.Gallery(height=832, object_fit='contain', label='✨ Your Magical Creations ✨')
+    
+    # Remove the examples section completely
     ips = [input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source]
     relight_button.click(fn=process_relight, inputs=ips, outputs=[output_bg, result_gallery])
     example_quick_prompts.click(lambda x, y: ', '.join(y.split(', ')[:2] + [x[0]]), inputs=[example_quick_prompts, prompt], outputs=prompt, show_progress=False, queue=False)
     example_quick_subjects.click(lambda x: x[0], inputs=example_quick_subjects, outputs=prompt, show_progress=False, queue=False)
 
 
-block.launch(server_name='0.0.0.0')
+block.launch(server_name='0.0.0.0', quiet=True, show_error=False)
