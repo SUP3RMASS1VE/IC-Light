@@ -737,138 +737,150 @@ body {
     border: none !important;
     color: black !important;
     font-weight: bold !important;
-    font-size: 1.2em !important;
+    font-size: 1.1em !important;
     transition: all 0.3s ease !important;
     transform: scale(1) !important;
-    border-radius: 10px !important;
-    box-shadow: 0 0 15px rgba(255, 0, 255, 0.5) !important;
+    border-radius: 8px !important;
+    box-shadow: 0 0 12px rgba(255, 0, 255, 0.5) !important;
+    padding: 8px 16px !important;
 }
 
 .gr-button:hover {
-    transform: scale(1.05) !important;
-    box-shadow: 0 0 20px rgba(0, 255, 204, 0.8) !important;
+    transform: scale(1.03) !important;
+    box-shadow: 0 0 15px rgba(0, 255, 204, 0.8) !important;
     background: linear-gradient(90deg, #00ffcc, #ff00ff) !important;
 }
 
 .gr-form {
     border: 2px solid var(--border-color) !important;
-    border-radius: 15px !important;
-    box-shadow: 0 0 20px rgba(136, 0, 255, 0.3) !important;
+    border-radius: 12px !important;
+    box-shadow: 0 0 15px rgba(136, 0, 255, 0.3) !important;
     background-color: rgba(26, 0, 51, 0.7) !important;
-    padding: 20px !important;
+    padding: 15px !important;
 }
 
 .gr-input, .gr-textarea, .gr-dropdown {
     background-color: rgba(51, 0, 102, 0.5) !important;
-    border: 2px solid var(--border-color) !important;
+    border: 1px solid var(--border-color) !important;
     color: var(--text-color) !important;
-    border-radius: 10px !important;
+    border-radius: 8px !important;
+    padding: 6px 10px !important;
 }
 
 .gr-input:focus, .gr-textarea:focus {
     border-color: var(--accent-color) !important;
-    box-shadow: 0 0 10px rgba(255, 0, 255, 0.5) !important;
+    box-shadow: 0 0 8px rgba(255, 0, 255, 0.5) !important;
 }
 
 .gr-slider {
     accent-color: var(--accent-color) !important;
+    margin: 8px 0 !important;
 }
 
 .gr-slider-value {
     color: var(--accent-color) !important;
+    font-size: 0.9em !important;
 }
 
 .gr-accordion {
-    border: 2px solid var(--border-color) !important;
-    border-radius: 10px !important;
+    border: 1px solid var(--border-color) !important;
+    border-radius: 8px !important;
     background-color: rgba(51, 0, 102, 0.3) !important;
+    margin: 10px 0 !important;
 }
 
 .gr-radio {
     accent-color: var(--accent-color) !important;
+    margin: 3px !important;
 }
 
 h1, h2, h3 {
     color: #00ffcc !important;
-    text-shadow: 0 0 10px rgba(0, 255, 204, 0.5) !important;
+    text-shadow: 0 0 8px rgba(0, 255, 204, 0.5) !important;
     font-weight: bold !important;
     text-align: center !important;
-    font-size: 2.5em !important;
-    letter-spacing: 2px !important;
-    margin-bottom: 20px !important;
+    font-size: 2.2em !important;
+    letter-spacing: 1px !important;
+    margin-bottom: 15px !important;
 }
 
 .gr-gallery {
-    border: 2px solid var(--border-color) !important;
-    border-radius: 15px !important;
+    border: 1px solid var(--border-color) !important;
+    border-radius: 12px !important;
     background-color: rgba(26, 0, 51, 0.5) !important;
-    padding: 10px !important;
+    padding: 8px !important;
 }
 
 .gr-label {
     color: #00ffcc !important;
     font-weight: bold !important;
-    text-shadow: 0 0 5px rgba(0, 255, 204, 0.3) !important;
+    text-shadow: 0 0 4px rgba(0, 255, 204, 0.3) !important;
+    font-size: 0.95em !important;
+    margin-bottom: 4px !important;
 }
 
 .gr-box {
-    border: 2px solid var(--border-color) !important;
-    border-radius: 15px !important;
+    border: 1px solid var(--border-color) !important;
+    border-radius: 12px !important;
     background-color: rgba(26, 0, 51, 0.7) !important;
+    padding: 10px !important;
 }
 
 .gr-panel {
-    border-radius: 15px !important;
+    border-radius: 12px !important;
     background-color: rgba(26, 0, 51, 0.7) !important;
+    margin: 8px 0 !important;
 }
 
 .gr-image-viewer {
-    border: 2px solid var(--accent-color) !important;
-    border-radius: 15px !important;
+    border: 1px solid var(--accent-color) !important;
+    border-radius: 12px !important;
     overflow: hidden !important;
 }
 
 .gr-gallery-item {
-    border: 2px solid var(--border-color) !important;
-    border-radius: 10px !important;
+    border: 1px solid var(--border-color) !important;
+    border-radius: 8px !important;
     overflow: hidden !important;
     transition: all 0.3s ease !important;
+    margin: 4px !important;
 }
 
 .gr-gallery-item:hover {
-    transform: scale(1.03) !important;
+    transform: scale(1.02) !important;
     border-color: var(--accent-color) !important;
-    box-shadow: 0 0 15px rgba(255, 0, 255, 0.5) !important;
+    box-shadow: 0 0 12px rgba(255, 0, 255, 0.5) !important;
 }
 
 .tabs {
     border: none !important;
-    margin-top: 20px !important;
+    margin-top: 15px !important;
 }
 
 .tabitem {
     background-color: rgba(26, 0, 51, 0.7) !important;
-    border: 2px solid var(--border-color) !important;
-    border-radius: 15px !important;
-    padding: 20px !important;
-    margin-top: 10px !important;
+    border: 1px solid var(--border-color) !important;
+    border-radius: 12px !important;
+    padding: 15px !important;
+    margin-top: 8px !important;
 }
 
 .tab-nav {
-    border-bottom: 2px solid var(--border-color) !important;
-    margin-bottom: 20px !important;
+    border-bottom: 1px solid var(--border-color) !important;
+    margin-bottom: 15px !important;
 }
 
 .tab-nav * {
     background-color: rgba(26, 0, 51, 0.7) !important;
-    border: 2px solid var(--border-color) !important;
+    border: 1px solid var(--border-color) !important;
     border-bottom: none !important;
-    border-radius: 10px 10px 0 0 !important;
+    border-radius: 8px 8px 0 0 !important;
     color: var(--text-color) !important;
     font-weight: bold !important;
-    padding: 10px 20px !important;
-    margin-right: 5px !important;
+    padding: 8px 16px !important;
+    margin-right: 4px !important;
     transition: all 0.3s ease !important;
+    font-size: 0.95em !important;
 }
 
 .tab-nav *:hover {
@@ -879,44 +891,45 @@ h1, h2, h3 {
     background: linear-gradient(90deg, #ff00ff, #00ffcc) !important;
     color: black !important;
     border-bottom: none !important;
-    transform: translateY(-5px) !important;
-    box-shadow: 0 -5px 10px rgba(255, 0, 255, 0.3) !important;
+    transform: translateY(-4px) !important;
+    box-shadow: 0 -4px 8px rgba(255, 0, 255, 0.3) !important;
 }
 
 .gr-dataset {
-    border: 2px solid var(--border-color) !important;
-    border-radius: 10px !important;
+    border: 1px solid var(--border-color) !important;
+    border-radius: 8px !important;
     background-color: rgba(51, 0, 102, 0.3) !important;
-    padding: 10px !important;
-    margin-bottom: 15px !important;
+    padding: 8px !important;
+    margin-bottom: 12px !important;
 }
 
 .gr-dataset-items {
     display: flex !important;
     flex-wrap: wrap !important;
-    gap: 10px !important;
+    gap: 8px !important;
 }
 
 .gr-dataset-item {
     background: linear-gradient(45deg, rgba(255, 0, 255, 0.2), rgba(0, 255, 204, 0.2)) !important;
     border: 1px solid var(--border-color) !important;
-    border-radius: 8px !important;
-    padding: 8px 12px !important;
+    border-radius: 6px !important;
+    padding: 6px 10px !important;
     cursor: pointer !important;
     transition: all 0.2s ease !important;
+    font-size: 0.9em !important;
 }
 
 .gr-dataset-item:hover {
     background: linear-gradient(45deg, rgba(255, 0, 255, 0.4), rgba(0, 255, 204, 0.4)) !important;
-    transform: scale(1.05) !important;
-    box-shadow: 0 0 10px rgba(255, 0, 255, 0.4) !important;
+    transform: scale(1.03) !important;
+    box-shadow: 0 0 8px rgba(255, 0, 255, 0.4) !important;
 }
 
 /* Add some animation */
 @keyframes glow {
-    0% { text-shadow: 0 0 10px rgba(0, 255, 204, 0.5); }
-    50% { text-shadow: 0 0 20px rgba(255, 0, 255, 0.8); }
-    100% { text-shadow: 0 0 10px rgba(0, 255, 204, 0.5); }
+    0% { text-shadow: 0 0 8px rgba(0, 255, 204, 0.5); }
+    50% { text-shadow: 0 0 15px rgba(255, 0, 255, 0.8); }
+    100% { text-shadow: 0 0 8px rgba(0, 255, 204, 0.5); }
 }
 
 h1 {
@@ -925,11 +938,11 @@ h1 {
 
 /* Make the main title extra funky */
 #app-title {
-    font-size: 1.5em !important;
+    font-size: 1.4em !important;
     background: linear-gradient(90deg, #ff00ff, #00ffcc);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
-    margin: 10px 0 !important;
+    margin: 8px 0 !important;
     text-shadow: none !important;
 }
 """
@@ -946,8 +959,8 @@ with block:
             with gr.Row():
                 with gr.Column():
                     with gr.Row():
-                        input_fg_tab1 = gr.Image(source='upload', type="numpy", label="Upload Your Image", height=480)
-                        output_bg_tab1 = gr.Image(type="numpy", label="Preprocessed Foreground", height=480)
+                        input_fg_tab1 = gr.Image(source='upload', type="numpy", label="Upload Your Image", height=450)
+                        output_bg_tab1 = gr.Image(type="numpy", label="Preprocessed Foreground", height=450)
                     prompt_tab1 = gr.Textbox(label="✨ Enter Your Magical Prompt ✨", placeholder="Describe the lighting you want...")
                     bg_source_tab1 = gr.Radio(choices=[e.value for e in BGSource if e not in [BGSource.UPLOAD, BGSource.UPLOAD_FLIP, BGSource.GREY]],
                                      value=BGSource.NONE.value,
@@ -977,7 +990,7 @@ with block:
                         a_prompt_tab1 = gr.Textbox(label="Magic Enhancer ✨", value='best quality')
                         n_prompt_tab1 = gr.Textbox(label="Magic Repellent 🛡️", value='lowres, bad anatomy, bad hands, cropped, worst quality')
                 with gr.Column():
-                    result_gallery_tab1 = gr.Gallery(height=832, object_fit='contain', label='✨ Your Magical Creations ✨')
+                    result_gallery_tab1 = gr.Gallery(height=800, object_fit='contain', label='✨ Your Magical Creations ✨')
             
             # Connect the components for tab 1
             ips_tab1 = [input_fg_tab1, prompt_tab1, image_width_tab1, image_height_tab1, num_samples_tab1, seed_tab1, steps_tab1, a_prompt_tab1, n_prompt_tab1, cfg_tab1, highres_scale_tab1, highres_denoise_tab1, lowres_denoise_tab1, bg_source_tab1]
@@ -990,8 +1003,8 @@ with block:
             with gr.Row():
                 with gr.Column():
                     with gr.Row():
-                        input_fg_tab2 = gr.Image(source='upload', type="numpy", label="🧙‍♂️ Foreground Magic ✨", height=480)
-                        input_bg_tab2 = gr.Image(source='upload', type="numpy", label="🔮 Background Enchantment ✨", height=480)
+                        input_fg_tab2 = gr.Image(source='upload', type="numpy", label="🧙‍♂️ Foreground Magic ✨", height=450)
+                        input_bg_tab2 = gr.Image(source='upload', type="numpy", label="🔮 Background Enchantment ✨", height=450)
                     prompt_tab2 = gr.Textbox(label="✨ Enter Your Magical Prompt ✨", placeholder="Describe the lighting you want...")
                     bg_source_tab2 = gr.Radio(choices=[e.value for e in BGSource],
                                      value=BGSource.UPLOAD.value,
@@ -1000,7 +1013,7 @@ with block:
                     example_prompts_tab2 = gr.Dataset(samples=quick_prompts, label='💫 Magical Prompt Ideas 💫', components=[prompt_tab2])
                     
                     if 'db_examples' in globals():
-                        bg_gallery_tab2 = gr.Gallery(height=450, object_fit='contain', label='🎨 Background Inspiration Gallery 🎨', value=db_examples.bg_samples, columns=5, allow_preview=False)
+                        bg_gallery_tab2 = gr.Gallery(height=420, object_fit='contain', label='🎨 Background Inspiration Gallery 🎨', value=db_examples.bg_samples, columns=5, allow_preview=False)
                     
                     relight_button_tab2 = gr.Button(value="✨ TRANSFORM WITH MAGIC ✨")
 
@@ -1021,7 +1034,7 @@ with block:
                         n_prompt_tab2 = gr.Textbox(label="🛡️ Magic Repellent Words 🛡️",
                                           value='lowres, bad anatomy, bad hands, cropped, worst quality')
                 with gr.Column():
-                    result_gallery_tab2 = gr.Gallery(height=832, object_fit='contain', label='✨ Your Magical Creations ✨')
+                    result_gallery_tab2 = gr.Gallery(height=800, object_fit='contain', label='✨ Your Magical Creations ✨')
             
             # Connect the components for tab 2
             ips_tab2 = [input_fg_tab2, input_bg_tab2, prompt_tab2, image_width_tab2, image_height_tab2, num_samples_tab2, seed_tab2, steps_tab2, a_prompt_tab2, n_prompt_tab2, cfg_tab2, highres_scale_tab2, highres_denoise_tab2, bg_source_tab2]
