@@ -1,8 +1,8 @@
 # IC-Light Enhanced
 
 This project is an enhanced version of the [IC-Light](https://github.com/lllyasviel/IC-Light) repository, designed for advanced image relighting and enhancement using Stable Diffusion and deep learning techniques.
-![Screenshot 2025-03-10 232133](https://github.com/user-attachments/assets/cd2fef8a-bb8c-4e77-8fc8-ca3369cb48f7)
-![Screenshot 2025-03-10 232115](https://github.com/user-attachments/assets/723bd314-09ec-4dd9-b268-51dfcae2a7db)
+![Screenshot 2025-05-20 145835](https://github.com/user-attachments/assets/57703773-c81f-4ab1-9061-bfd11aa03718)
+![Screenshot 2025-05-20 150246](https://github.com/user-attachments/assets/54093150-f10f-4591-8e82-08c64767613e)
 
 ## Features
 - Foreground-only relighting
