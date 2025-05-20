@@ -1067,6 +1067,38 @@ body {
     background: transparent !important;
 }
 
+/* Improved gallery scrolling */
+#bg_gallery_scroll {
+    max-height: 480px !important;
+    overflow-y: auto !important;
+}
+
+#bg_gallery_scroll .grid {
+    overflow-y: auto !important;
+    max-height: 440px !important;
+}
+
+/* Make scrollbars more visible */
+::-webkit-scrollbar {
+    width: 14px !important;
+    height: 14px !important;
+}
+
+::-webkit-scrollbar-track {
+    background: rgba(26, 0, 51, 0.3) !important;
+    border-radius: 10px !important;
+}
+
+::-webkit-scrollbar-thumb {
+    background: linear-gradient(var(--accent-color), var(--accent-color2)) !important;
+    border-radius: 10px !important;
+    border: 2px solid rgba(26, 0, 51, 0.5) !important;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(var(--accent-color2), var(--accent-color)) !important;
+}
+
 /* Hide error messages in galleries */
 .error-message, .error-container, .error {
     display: none !important;
@@ -1367,14 +1399,47 @@ function() {
         });
     }
     
+    // Function to fix scrolling in the background gallery
+    function fixBackgroundGalleryScrolling() {
+        const bgGallery = document.getElementById('bg_gallery_scroll');
+        if (bgGallery) {
+            // Apply scrolling styles directly
+            bgGallery.style.overflowY = 'auto';
+            bgGallery.style.maxHeight = '480px';
+            
+            // Find the grid container inside the gallery
+            const gridContainer = bgGallery.querySelector('.grid');
+            if (gridContainer) {
+                gridContainer.style.overflowY = 'auto';
+                gridContainer.style.maxHeight = '440px';
+            }
+            
+            // Also apply to thumbnails container
+            const thumbnailsContainer = bgGallery.querySelector('.thumbnails');
+            if (thumbnailsContainer) {
+                thumbnailsContainer.style.overflowY = 'auto';
+                thumbnailsContainer.style.maxHeight = '440px';
+            }
+        }
+    }
+    
     // Run on page load and continuously
     hideErrors();
     
-    // Run every 100ms to catch any errors that might appear
-    setInterval(hideErrors, 100);
+    // Fix scrolling after a short delay to ensure elements are loaded
+    setTimeout(fixBackgroundGalleryScrolling, 500);
+    
+    // Run every 100ms to catch any errors and continuously fix scrolling
+    setInterval(() => {
+        hideErrors();
+        fixBackgroundGalleryScrolling();
+    }, 500);
     
     // Also listen for DOM changes and run on any change
-    const observer = new MutationObserver(hideErrors);
+    const observer = new MutationObserver(() => {
+        hideErrors();
+        fixBackgroundGalleryScrolling();
+    });
     observer.observe(document.body, { 
         childList: true, 
         subtree: true,
@@ -1535,7 +1600,16 @@ with block:
                     example_prompts_tab2 = gr.Dataset(samples=quick_prompts, label='💫 Magical Prompt Ideas 💫', components=[prompt_tab2])
                     
                     if 'db_examples' in globals():
-                        bg_gallery_tab2 = gr.Gallery(height=420, object_fit='contain', label='🎨 Background Inspiration Gallery 🎨', value=db_examples.bg_samples, columns=5, allow_preview=False)
+                        bg_gallery_tab2 = gr.Gallery(
+                            height=480,  # Increased height
+                            object_fit='contain', 
+                            label='🎨 Background Inspiration Gallery 🎨', 
+                            value=db_examples.bg_samples, 
+                            columns=5, 
+                            rows=3,  # Limit rows to force scrolling
+                            allow_preview=False,
+                            elem_id="bg_gallery_scroll"
+                        )
                     
                     # Add processing status for Tab 2
                     processing_status_tab2 = gr.Markdown("⏳ Ready to process! Upload images and click the button below to start magic ✨", elem_id="status_tab2")
