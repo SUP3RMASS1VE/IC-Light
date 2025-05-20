@@ -1450,7 +1450,7 @@ function() {
 """
 
 # Create the Gradio interface with tabs for different modes
-block = gr.Blocks(css=custom_css, js=js).queue()
+block = gr.Blocks(css=custom_css, js=js, title="IC-Light-Ultimate-Studio").queue()
 with block:
     with gr.Row():
         gr.Markdown("# ✨ IC-Light Ultimate Studio ✨", elem_id="app-title")
@@ -1713,4 +1713,4 @@ with block:
                 bg_gallery_tab2.select(bg_gallery_selected, inputs=bg_gallery_tab2, outputs=input_bg_tab2)
 
 # Launch the app
-block.launch(server_name='127.0.0.1', quiet=True, show_error=False)
+block.launch(server_name='127.0.0.1', quiet=False, show_error=True, share=False, inbrowser=True)
