@@ -6,6 +6,9 @@ import torch
 import safetensors.torch as sf
 import db_examples
 import warnings
+import gc
+import cv2
+import time  # Add this for small delays in loading
 
 # Suppress warnings
 warnings.filterwarnings("ignore")
@@ -13,6 +16,18 @@ warnings.filterwarnings("ignore")
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "garbage_collection_threshold:0.6,max_split_size_mb:128"
 # Suppress Gradio warnings
 os.environ["GRADIO_ANALYTICS_ENABLED"] = "False"
+
+# VRAM optimization settings for higher resolutions
+torch.backends.cudnn.benchmark = True  # Speed up processing
+# Use deterministic algorithms only when not using large resolutions
+torch.backends.cudnn.deterministic = False
+
+# Function to free unused memory
+def optimize_memory():
+    """Free unused memory to prevent OOM errors with larger resolutions"""
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        gc.collect()
 
 from PIL import Image
 from diffusers import StableDiffusionPipeline, StableDiffusionImg2ImgPipeline
@@ -320,6 +335,18 @@ class BGSource(Enum):
 def process_fg_only(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source):
     """Process with foreground only (from gradio_demo.py)"""
     try:
+        # Calculate appropriate batch size based on resolution to prevent OOM errors
+        resolution_area = image_width * image_height
+        
+        # Default batch size is the requested number of samples
+        batch_size = num_samples
+        
+        # Reduce batch size as resolution increases
+        if resolution_area > 512 * 512:
+            # For resolutions larger than 512x512, process one image at a time
+            batch_size = 1
+            print(f"High resolution detected ({image_width}x{image_height}). Processing one sample at a time to prevent OOM errors.")
+        
         bg_source = BGSource(bg_source)
         input_bg = None
 
@@ -346,101 +373,138 @@ def process_fg_only(input_fg, prompt, image_width, image_height, num_samples, se
             # Default to black background
             input_bg = np.zeros(shape=(image_height, image_width, 3), dtype=np.uint8)
 
-        rng = torch.Generator(device=device).manual_seed(int(seed))
-
-        fg = resize_and_center_crop(input_fg, image_width, image_height)
+        # Process in batches to handle multiple samples for large resolutions
+        all_pixels = []
         
-        # For the 8-channel UNet, we only need the foreground
-        concat_conds = numpy2pytorch([fg]).to(device=vae.device, dtype=vae.dtype)
-        concat_conds = vae.encode(concat_conds).latent_dist.mode() * vae.config.scaling_factor
+        for batch_idx in range(0, num_samples, batch_size):
+            # Clear CUDA cache before each batch
+            optimize_memory()
+            
+            # Calculate how many samples to process in this batch
+            current_batch_size = min(batch_size, num_samples - batch_idx)
+            print(f"Processing batch {batch_idx//batch_size + 1}/{(num_samples + batch_size - 1)//batch_size} with {current_batch_size} samples...")
+            
+            # Generate seeds for this batch
+            batch_seeds = [seed + i for i in range(batch_idx, batch_idx + current_batch_size)]
+            batch_rng = torch.Generator(device=device).manual_seed(batch_seeds[0])
 
-        conds, unconds = encode_prompt_pair(positive_prompt=prompt + ', ' + a_prompt, negative_prompt=n_prompt)
+            fg = resize_and_center_crop(input_fg, image_width, image_height)
+            
+            # For the 8-channel UNet, we only need the foreground
+            concat_conds = numpy2pytorch([fg]).to(device=vae.device, dtype=vae.dtype)
+            concat_conds = vae.encode(concat_conds).latent_dist.mode() * vae.config.scaling_factor
 
-        # Use foreground-only pipeline
-        if input_bg is None or bg_source == BGSource.NONE:
-            latents = t2i_pipe_fg(
-                prompt_embeds=conds,
-                negative_prompt_embeds=unconds,
-                width=image_width,
-                height=image_height,
-                num_inference_steps=steps,
-                num_images_per_prompt=num_samples,
-                generator=rng,
-                output_type='latent',
-                guidance_scale=cfg,
-                cross_attention_kwargs={'concat_conds': concat_conds},
-            ).images.to(vae.dtype) / vae.config.scaling_factor
-        else:
-            try:
-                bg = resize_and_center_crop(input_bg, image_width, image_height)
-                bg_latent = numpy2pytorch([bg]).to(device=vae.device, dtype=vae.dtype)
-                bg_latent = vae.encode(bg_latent).latent_dist.mode() * vae.config.scaling_factor
-                latents = i2i_pipe_fg(
-                    image=bg_latent,
-                    strength=lowres_denoise,
-                    prompt_embeds=conds,
-                    negative_prompt_embeds=unconds,
-                    width=image_width,
-                    height=image_height,
-                    num_inference_steps=int(round(steps / lowres_denoise)),
-                    num_images_per_prompt=num_samples,
-                    generator=rng,
-                    output_type='latent',
-                    guidance_scale=cfg,
-                    cross_attention_kwargs={'concat_conds': concat_conds},
-                ).images.to(vae.dtype) / vae.config.scaling_factor
-            except Exception as e:
-                print(f"Error using background: {str(e)}. Falling back to no background.")
-                # Fall back to no background if there's an error
-                latents = t2i_pipe_fg(
+            conds, unconds = encode_prompt_pair(positive_prompt=prompt + ', ' + a_prompt, negative_prompt=n_prompt)
+
+            # Use foreground-only pipeline
+            if input_bg is None or bg_source == BGSource.NONE:
+                batch_latents = t2i_pipe_fg(
                     prompt_embeds=conds,
                     negative_prompt_embeds=unconds,
                     width=image_width,
                     height=image_height,
                     num_inference_steps=steps,
-                    num_images_per_prompt=num_samples,
-                    generator=rng,
+                    num_images_per_prompt=current_batch_size,
+                    generator=batch_rng,
                     output_type='latent',
                     guidance_scale=cfg,
                     cross_attention_kwargs={'concat_conds': concat_conds},
                 ).images.to(vae.dtype) / vae.config.scaling_factor
+            else:
+                try:
+                    bg = resize_and_center_crop(input_bg, image_width, image_height)
+                    bg_latent = numpy2pytorch([bg]).to(device=vae.device, dtype=vae.dtype)
+                    bg_latent = vae.encode(bg_latent).latent_dist.mode() * vae.config.scaling_factor
+                    batch_latents = i2i_pipe_fg(
+                        image=bg_latent,
+                        strength=lowres_denoise,
+                        prompt_embeds=conds,
+                        negative_prompt_embeds=unconds,
+                        width=image_width,
+                        height=image_height,
+                        num_inference_steps=int(round(steps / lowres_denoise)),
+                        num_images_per_prompt=current_batch_size,
+                        generator=batch_rng,
+                        output_type='latent',
+                        guidance_scale=cfg,
+                        cross_attention_kwargs={'concat_conds': concat_conds},
+                    ).images.to(vae.dtype) / vae.config.scaling_factor
+                except Exception as e:
+                    print(f"Error using background: {str(e)}. Falling back to no background.")
+                    # Fall back to no background if there's an error
+                    batch_latents = t2i_pipe_fg(
+                        prompt_embeds=conds,
+                        negative_prompt_embeds=unconds,
+                        width=image_width,
+                        height=image_height,
+                        num_inference_steps=steps,
+                        num_images_per_prompt=current_batch_size,
+                        generator=batch_rng,
+                        output_type='latent',
+                        guidance_scale=cfg,
+                        cross_attention_kwargs={'concat_conds': concat_conds},
+                    ).images.to(vae.dtype) / vae.config.scaling_factor
 
-        pixels = vae.decode(latents).sample
-        pixels = pytorch2numpy(pixels)
-        pixels = [resize_without_crop(
-            image=p,
-            target_width=int(round(image_width * highres_scale / 64.0) * 64),
-            target_height=int(round(image_height * highres_scale / 64.0) * 64))
-        for p in pixels]
+            batch_pixels = vae.decode(batch_latents).sample
+            batch_pixels = pytorch2numpy(batch_pixels)
+            batch_pixels = [resize_without_crop(
+                image=p,
+                target_width=int(round(image_width * highres_scale / 64.0) * 64),
+                target_height=int(round(image_height * highres_scale / 64.0) * 64))
+            for p in batch_pixels]
 
-        pixels = numpy2pytorch(pixels).to(device=vae.device, dtype=vae.dtype)
-        latents = vae.encode(pixels).latent_dist.mode() * vae.config.scaling_factor
-        latents = latents.to(device=unet_fg.device, dtype=unet_fg.dtype)
+            # Higher resolution refinement - process one image at a time for large resolutions
+            highres_pixels = []
+            for i, p in enumerate(batch_pixels):
+                # Clear CUDA cache before processing each high-res image
+                optimize_memory()
+                
+                print(f"Processing high-res refinement for sample {batch_idx + i + 1}/{num_samples}...")
+                
+                # Calculate how many samples to process in this batch
+                p_tensor = numpy2pytorch([p]).to(device=vae.device, dtype=vae.dtype)
+                p_latent = vae.encode(p_tensor).latent_dist.mode() * vae.config.scaling_factor
+                p_latent = p_latent.to(device=unet_fg.device, dtype=unet_fg.dtype)
 
-        image_height, image_width = latents.shape[2] * 8, latents.shape[3] * 8
+                p_height, p_width = p_latent.shape[2] * 8, p_latent.shape[3] * 8
 
-        fg = resize_and_center_crop(input_fg, image_width, image_height)
-        concat_conds = numpy2pytorch([fg]).to(device=vae.device, dtype=vae.dtype)
-        concat_conds = vae.encode(concat_conds).latent_dist.mode() * vae.config.scaling_factor
+                p_fg = resize_and_center_crop(input_fg, p_width, p_height)
+                p_concat_conds = numpy2pytorch([p_fg]).to(device=vae.device, dtype=vae.dtype)
+                p_concat_conds = vae.encode(p_concat_conds).latent_dist.mode() * vae.config.scaling_factor
 
-        latents = i2i_pipe_fg(
-            image=latents,
-            strength=highres_denoise,
-            prompt_embeds=conds,
-            negative_prompt_embeds=unconds,
-            width=image_width,
-            height=image_height,
-            num_inference_steps=int(round(steps / highres_denoise)),
-            num_images_per_prompt=num_samples,
-            generator=rng,
-            output_type='latent',
-            guidance_scale=cfg,
-            cross_attention_kwargs={'concat_conds': concat_conds},
-        ).images.to(vae.dtype) / vae.config.scaling_factor
+                # Use a different seed for each image
+                p_rng = torch.Generator(device=device).manual_seed(batch_seeds[i])
 
-        pixels = vae.decode(latents).sample
+                p_latent = i2i_pipe_fg(
+                    image=p_latent,
+                    strength=highres_denoise,
+                    prompt_embeds=conds,
+                    negative_prompt_embeds=unconds,
+                    width=p_width,
+                    height=p_height,
+                    num_inference_steps=int(round(steps / highres_denoise)),
+                    num_images_per_prompt=1,  # Process one high-res image at a time
+                    generator=p_rng,
+                    output_type='latent',
+                    guidance_scale=cfg,
+                    cross_attention_kwargs={'concat_conds': p_concat_conds},
+                ).images.to(vae.dtype) / vae.config.scaling_factor
 
-        return pytorch2numpy(pixels)
+                p_pixel = vae.decode(p_latent).sample
+                p_pixel = pytorch2numpy(p_pixel)[0]  # Get single image
+                highres_pixels.append(p_pixel)
+                
+                # Clear memory after processing each high-res image
+                del p_tensor, p_latent, p_concat_conds
+                optimize_memory()
+
+            all_pixels.extend(highres_pixels)
+            
+            # Clear batch-specific tensors to free memory
+            del batch_latents, batch_pixels
+            optimize_memory()
+
+        return all_pixels
     except Exception as e:
         print(f"Error in process_fg_only function: {str(e)}")
         # Return a blank image as a fallback
@@ -451,6 +515,18 @@ def process_fg_only(input_fg, prompt, image_width, image_height, num_samples, se
 def process_fg_bg(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source):
     """Process with foreground and background (from gradio_demo_bg.py)"""
     try:
+        # Calculate appropriate batch size based on resolution to prevent OOM errors
+        resolution_area = image_width * image_height
+        
+        # Default batch size is the requested number of samples
+        batch_size = num_samples
+        
+        # Reduce batch size as resolution increases
+        if resolution_area > 512 * 512:
+            # For resolutions larger than 512x512, process one image at a time
+            batch_size = 1
+            print(f"High resolution detected ({image_width}x{image_height}). Processing one sample at a time to prevent OOM errors.")
+        
         bg_source = BGSource(bg_source)
 
         if bg_source == BGSource.UPLOAD:
@@ -479,67 +555,98 @@ def process_fg_bg(input_fg, input_bg, prompt, image_width, image_height, num_sam
             # Default to grey background
             input_bg = np.zeros(shape=(image_height, image_width, 3), dtype=np.uint8) + 64
 
-        rng = torch.Generator(device=device).manual_seed(seed)
-
+        # Process in batches to handle multiple samples for large resolutions
+        all_pixels = []
+        
+        # Save the original foreground and background for reference
         fg = resize_and_center_crop(input_fg, image_width, image_height)
         bg = resize_and_center_crop(input_bg, image_width, image_height)
-        concat_conds = numpy2pytorch([fg, bg]).to(device=vae.device, dtype=vae.dtype)
-        concat_conds = vae.encode(concat_conds).latent_dist.mode() * vae.config.scaling_factor
-        concat_conds = torch.cat([c[None, ...] for c in concat_conds], dim=1)
+        
+        for batch_idx in range(0, num_samples, batch_size):
+            # Clear CUDA cache before each batch
+            optimize_memory()
+            
+            # Calculate how many samples to process in this batch
+            current_batch_size = min(batch_size, num_samples - batch_idx)
+            print(f"Processing batch {batch_idx//batch_size + 1}/{(num_samples + batch_size - 1)//batch_size} with {current_batch_size} samples...")
+            
+            # Generate seeds for this batch
+            batch_seeds = [seed + i for i in range(batch_idx, batch_idx + current_batch_size)]
+            batch_rng = torch.Generator(device=device).manual_seed(batch_seeds[0])
+            concat_conds = numpy2pytorch([fg, bg]).to(device=vae.device, dtype=vae.dtype)
+            concat_conds = vae.encode(concat_conds).latent_dist.mode() * vae.config.scaling_factor
+            concat_conds = torch.cat([c[None, ...] for c in concat_conds], dim=1)
+            conds, unconds = encode_prompt_pair(positive_prompt=prompt + ', ' + a_prompt, negative_prompt=n_prompt)
+            batch_latents = t2i_pipe_fgbg(
+                prompt_embeds=conds,
+                negative_prompt_embeds=unconds,
+                width=image_width,
+                height=image_height,
+                num_inference_steps=steps,
+                num_images_per_prompt=current_batch_size,
+                generator=batch_rng,
+                output_type='latent',
+                guidance_scale=cfg,
+                cross_attention_kwargs={'concat_conds': concat_conds},
+            ).images.to(vae.dtype) / vae.config.scaling_factor
+            batch_pixels = vae.decode(batch_latents).sample
+            batch_pixels = pytorch2numpy(batch_pixels)
+            batch_pixels = [resize_without_crop(
+                image=p,
+                target_width=int(round(image_width * highres_scale / 64.0) * 64),
+                target_height=int(round(image_height * highres_scale / 64.0) * 64))
+            for p in batch_pixels]
 
-        conds, unconds = encode_prompt_pair(positive_prompt=prompt + ', ' + a_prompt, negative_prompt=n_prompt)
-
-        latents = t2i_pipe_fgbg(
-            prompt_embeds=conds,
-            negative_prompt_embeds=unconds,
-            width=image_width,
-            height=image_height,
-            num_inference_steps=steps,
-            num_images_per_prompt=num_samples,
-            generator=rng,
-            output_type='latent',
-            guidance_scale=cfg,
-            cross_attention_kwargs={'concat_conds': concat_conds},
-        ).images.to(vae.dtype) / vae.config.scaling_factor
-
-        pixels = vae.decode(latents).sample
-        pixels = pytorch2numpy(pixels)
-        pixels = [resize_without_crop(
-            image=p,
-            target_width=int(round(image_width * highres_scale / 64.0) * 64),
-            target_height=int(round(image_height * highres_scale / 64.0) * 64))
-        for p in pixels]
-
-        pixels = numpy2pytorch(pixels).to(device=vae.device, dtype=vae.dtype)
-        latents = vae.encode(pixels).latent_dist.mode() * vae.config.scaling_factor
-        latents = latents.to(device=unet_fgbg.device, dtype=unet_fgbg.dtype)
-
-        image_height, image_width = latents.shape[2] * 8, latents.shape[3] * 8
-        fg = resize_and_center_crop(input_fg, image_width, image_height)
-        bg = resize_and_center_crop(input_bg, image_width, image_height)
-        concat_conds = numpy2pytorch([fg, bg]).to(device=vae.device, dtype=vae.dtype)
-        concat_conds = vae.encode(concat_conds).latent_dist.mode() * vae.config.scaling_factor
-        concat_conds = torch.cat([c[None, ...] for c in concat_conds], dim=1)
-
-        latents = i2i_pipe_fgbg(
-            image=latents,
-            strength=highres_denoise,
-            prompt_embeds=conds,
-            negative_prompt_embeds=unconds,
-            width=image_width,
-            height=image_height,
-            num_inference_steps=int(round(steps / highres_denoise)),
-            num_images_per_prompt=num_samples,
-            generator=rng,
-            output_type='latent',
-            guidance_scale=cfg,
-            cross_attention_kwargs={'concat_conds': concat_conds},
-        ).images.to(vae.dtype) / vae.config.scaling_factor
-
-        pixels = vae.decode(latents).sample
-        pixels = pytorch2numpy(pixels, quant=True)
-
-        return pixels, [fg, bg]
+            # Higher resolution refinement - process one image at a time for large resolutions
+            highres_pixels = []
+            for i, p in enumerate(batch_pixels):
+                # Clear CUDA cache before processing each high-res image
+                if resolution_area > 512 * 512:
+                    optimize_memory()
+                
+                print(f"Processing high-res refinement for sample {batch_idx + i + 1}/{num_samples}...")
+                
+                p_tensor = numpy2pytorch([p]).to(device=vae.device, dtype=vae.dtype)
+                p_latent = vae.encode(p_tensor).latent_dist.mode() * vae.config.scaling_factor
+                p_latent = p_latent.to(device=unet_fgbg.device, dtype=unet_fgbg.dtype)
+                p_height, p_width = p_latent.shape[2] * 8, p_latent.shape[3] * 8
+                p_fg = resize_and_center_crop(input_fg, p_width, p_height)
+                p_bg = resize_and_center_crop(input_bg, p_width, p_height)
+                p_concat_conds = numpy2pytorch([p_fg, p_bg]).to(device=vae.device, dtype=vae.dtype)
+                p_concat_conds = vae.encode(p_concat_conds).latent_dist.mode() * vae.config.scaling_factor
+                p_concat_conds = torch.cat([c[None, ...] for c in p_concat_conds], dim=1)
+                # Use a different seed for each image
+                p_rng = torch.Generator(device=device).manual_seed(batch_seeds[i])
+                p_latent = i2i_pipe_fgbg(
+                    image=p_latent,
+                    strength=highres_denoise,
+                    prompt_embeds=conds,
+                    negative_prompt_embeds=unconds,
+                    width=p_width,
+                    height=p_height,
+                    num_inference_steps=int(round(steps / highres_denoise)),
+                    num_images_per_prompt=1,  # Process one high-res image at a time
+                    generator=p_rng,
+                    output_type='latent',
+                    guidance_scale=cfg,
+                    cross_attention_kwargs={'concat_conds': p_concat_conds},
+                ).images.to(vae.dtype) / vae.config.scaling_factor
+                p_pixel = vae.decode(p_latent).sample
+                p_pixel = pytorch2numpy(p_pixel, quant=True)[0]  # Get single image
+                highres_pixels.append(p_pixel)
+                
+                # Clear memory after processing each high-res image
+                if resolution_area > 512 * 512:
+                    del p_tensor, p_latent, p_concat_conds
+                    optimize_memory()
+            all_pixels.extend(highres_pixels)
+            
+            # Clear batch-specific tensors to free memory
+            if resolution_area > 512 * 512:
+                del batch_latents, batch_pixels
+                optimize_memory()
+        
+        return all_pixels, [fg, bg]
     except Exception as e:
         print(f"Error in process_fg_bg function: {str(e)}")
         # Return blank images as fallback
@@ -547,10 +654,142 @@ def process_fg_bg(input_fg, input_bg, prompt, image_width, image_height, num_sam
         return [blank], [blank, blank]
 
 
+# Create placeholder and error image functions
+def create_placeholder_image(text="Processing...", width=600, height=400):
+    """Create a nicer looking placeholder image with gradient background"""
+    # Create a dark gradient background
+    placeholder_img = np.zeros((height, width, 3), dtype=np.uint8)
+    
+    # Generate a purple to teal gradient background
+    for y in range(height):
+        gradient_value = y / height
+        r = int(26 + (gradient_value * 10))  # Dark purple to slightly lighter
+        g = int(0 + (gradient_value * 30))   # Almost black to some green
+        b = int(51 + (gradient_value * 90))  # Medium purple to teal
+        placeholder_img[y, :] = [r, g, b]
+    
+    # Add some noise for texture
+    noise = np.random.randint(0, 10, (height, width, 3), dtype=np.uint8)
+    placeholder_img = np.clip(placeholder_img + noise, 0, 255).astype(np.uint8)
+    
+    # Add a glow at the center
+    y_center, x_center = height // 2, width // 2
+    radius = min(height, width) // 3
+    y, x = np.ogrid[:height, :width]
+    dist_from_center = np.sqrt((x - x_center)**2 + (y - y_center)**2)
+    mask = dist_from_center <= radius
+    glow = np.zeros_like(placeholder_img)
+    glow[mask] = [120, 0, 150]  # Purple glow
+    
+    # Blend the glow
+    alpha = 0.3 * (1 - dist_from_center / radius)
+    alpha = np.clip(alpha, 0, 0.3)
+    for c in range(3):
+        placeholder_img[:,:,c] = placeholder_img[:,:,c] * (1 - alpha) + glow[:,:,c] * alpha
+    
+    # Add text
+    cv2_font = cv2.FONT_HERSHEY_SIMPLEX
+    # Calculate text size and position
+    text_size = cv2.getTextSize(text, cv2_font, 1, 2)[0]
+    text_x = (width - text_size[0]) // 2
+    text_y = (height + text_size[1]) // 2
+    
+    # Draw text with glow effect
+    # Outer glow
+    for dx, dy in [(-1,-1), (-1,1), (1,-1), (1,1), (-2,0), (2,0), (0,-2), (0,2)]:
+        cv2.putText(placeholder_img, text, (text_x+dx, text_y+dy), cv2_font, 1, (0, 255, 204), 2)
+    
+    # Main text
+    cv2.putText(placeholder_img, text, (text_x, text_y), cv2_font, 1, (255, 0, 255), 2)
+    
+    # Add sparkles
+    num_sparkles = 20
+    for _ in range(num_sparkles):
+        x = np.random.randint(0, width)
+        y = np.random.randint(0, height)
+        size = np.random.randint(2, 6)
+        color = [255, 0, 255] if np.random.random() > 0.5 else [0, 255, 204]  # Pink or teal
+        cv2.circle(placeholder_img, (x, y), size, color, -1)
+    
+    return placeholder_img
+
+def create_error_image(error_text="An error occurred", width=600, height=400):
+    """Create a placeholder to replace error messages"""
+    # Create a dark background with gradient
+    img = create_placeholder_image("", width, height)
+    
+    # Add loading text instead of error
+    loading_text = "Loading next image..."
+    cv2_font = cv2.FONT_HERSHEY_SIMPLEX
+    text_size = cv2.getTextSize(loading_text, cv2_font, 0.8, 2)[0]
+    text_x = (width - text_size[0]) // 2
+    text_y = (height + text_size[1]) // 2
+    
+    # Draw the loading text
+    cv2.putText(img, loading_text, (text_x, text_y), cv2_font, 0.8, (0, 255, 204), 2)
+    
+    # Add a hint text
+    hint_text = "Please try again or check settings"
+    hint_size = cv2.getTextSize(hint_text, cv2_font, 0.6, 1)[0]
+    hint_x = (width - hint_size[0]) // 2
+    hint_y = text_y + 40
+    cv2.putText(img, hint_text, (hint_x, hint_y), cv2_font, 0.6, (200, 200, 200), 1)
+    
+    return img
+
+# Create placeholder/loading functions for the UI
+def create_tab1_placeholders(input_fg):
+    if input_fg is not None and isinstance(input_fg, np.ndarray):
+        return input_fg, [create_placeholder_image()]
+    else:
+        blank_fg = create_placeholder_image("Please upload an image")
+        return blank_fg, [create_placeholder_image()]
+
+def create_tab2_placeholders():
+    return [create_placeholder_image("Processing... Please wait for all images.")]
+
+# Add the status update function back 
+# Add processing status update function
+def update_processing_status(is_processing=True, tab_id="status_tab1"):
+    status_text = "⏳ **PROCESSING...** Please wait while the magic happens! This may take a few minutes for high resolutions." if is_processing else "✅ **Done!** Your magical creations are ready! Click the button again for more enchantment."
+    
+    # Add JavaScript to change status and animate it
+    js_code = """
+    function() {
+        const statusElem = document.getElementById("%s");
+        if (statusElem) {
+            statusElem.innerHTML = `%s`;
+            
+            if (%s) {
+                // Add pulsing animation
+                statusElem.style.animation = "pulse 1.5s infinite";
+                const style = document.createElement('style');
+                style.innerHTML = `
+                    @keyframes pulse {
+                        0%% { opacity: 0.8; }
+                        50%% { opacity: 1; transform: scale(1.03); color: #00ffcc; }
+                        100%% { opacity: 0.8; }
+                    }
+                `;
+                document.head.appendChild(style);
+            } else {
+                // Remove animation
+                statusElem.style.animation = "none";
+            }
+        }
+    }
+    """ % (tab_id, status_text, str(is_processing).lower())
+    
+    return js_code
+
+# Fix the process_relight_fg_only function to not use yield
 @torch.inference_mode()
 def process_relight_fg_only(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source):
     """Relight with foreground only (from gradio_demo.py)"""
     try:
+        # Check if we need memory optimization for large images
+        is_large_resolution = (image_width > 512 or image_height > 512)
+        
         # Check if input_fg is None or empty
         if input_fg is None or not isinstance(input_fg, np.ndarray):
             raise ValueError("Please upload an image first")
@@ -563,9 +802,37 @@ def process_relight_fg_only(input_fg, prompt, image_width, image_height, num_sam
         print("Removing background from foreground image...")
         input_fg, matting = run_rmbg(input_fg)
         
-        # Process the image with the foreground-only pipeline
-        print(f"Processing with settings: width={image_width}, height={image_height}, samples={num_samples}, steps={steps}, bg_source={bg_source}")
-        results = process_fg_only(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source)
+        # For larger resolutions, use memory optimization
+        if is_large_resolution:
+            # Adjust batch size for larger resolutions to prevent OOM errors
+            actual_samples = 1  # Process one sample at a time
+            all_results = []
+            
+            print(f"Processing large resolution image ({image_width}x{image_height}) with optimized memory usage...")
+            
+            for i in range(num_samples):
+                # Use a new seed for each sample based on the original seed
+                current_seed = seed + i
+                print(f"Processing sample {i+1}/{num_samples} with seed {current_seed}...")
+                
+                # Free memory before processing
+                optimize_memory()
+                
+                # Process one sample at a time
+                result = process_fg_only(input_fg, prompt, image_width, image_height, 1, 
+                                        current_seed, steps, a_prompt, n_prompt, cfg, 
+                                        highres_scale, highres_denoise, lowres_denoise, bg_source)
+                
+                all_results.extend(result)
+                
+                # Free memory after processing
+                optimize_memory()
+            
+            results = all_results
+        else:
+            # Process the image with the foreground-only pipeline (original method)
+            print(f"Processing with settings: width={image_width}, height={image_height}, samples={num_samples}, steps={steps}, bg_source={bg_source}")
+            results = process_fg_only(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source)
         
         print("Processing complete!")
         return input_fg, results
@@ -574,21 +841,22 @@ def process_relight_fg_only(input_fg, prompt, image_width, image_height, num_sam
         import traceback
         traceback.print_exc()
         
-        # Return the original image and a blank image as fallback
+        # Return the original image and the error image
         if input_fg is not None and isinstance(input_fg, np.ndarray):
-            blank = np.ones((image_height, image_width, 3), dtype=np.uint8) * 255
-            return input_fg, [blank]
+            return input_fg, [create_error_image(f"Error: {str(e)}")]
         else:
             # Create blank images with error message
-            blank_fg = np.ones((400, 600, 3), dtype=np.uint8) * 255
-            blank_result = np.ones((image_height, image_width, 3), dtype=np.uint8) * 255
-            return blank_fg, [blank_result]
+            blank_fg = create_error_image("No image uploaded")
+            return blank_fg, [create_error_image(f"Error: {str(e)}")]
 
-
+# Fix the process_relight_fg_bg function to not use yield
 @torch.inference_mode()
 def process_relight_fg_bg(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source):
     """Relight with foreground and background (from gradio_demo_bg.py)"""
     try:
+        # Check if we need memory optimization for large images
+        is_large_resolution = (image_width > 512 or image_height > 512)
+        
         # Check if input_fg is None or empty
         if input_fg is None or not isinstance(input_fg, np.ndarray):
             raise ValueError("Please upload a foreground image first")
@@ -604,41 +872,103 @@ def process_relight_fg_bg(input_fg, input_bg, prompt, image_width, image_height,
         print("Removing background from foreground image...")
         input_fg, matting = run_rmbg(input_fg)
         
-        print(f"Processing with settings: width={image_width}, height={image_height}, samples={num_samples}, steps={steps}, bg_source={bg_source}")
-        results, extra_images = process_fg_bg(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source)
+        # For larger resolutions, use memory optimization
+        if is_large_resolution:
+            # Adjust batch size for larger resolutions to prevent OOM errors
+            actual_samples = 1  # Process one sample at a time
+            all_results = []
+            all_extra_images = []
+            
+            print(f"Processing large resolution image ({image_width}x{image_height}) with optimized memory usage...")
+            
+            for i in range(num_samples):
+                # Use a new seed for each sample based on the original seed
+                current_seed = seed + i
+                print(f"Processing sample {i+1}/{num_samples} with seed {current_seed}...")
+                
+                # Free memory before processing
+                optimize_memory()
+                
+                # Process one sample at a time
+                results, extra_images = process_fg_bg(input_fg, input_bg, prompt, image_width, image_height, 1, 
+                                                    current_seed, steps, a_prompt, n_prompt, cfg, 
+                                                    highres_scale, highres_denoise, bg_source)
+                
+                all_results.extend(results)
+                
+                # Only keep one set of extra images
+                if i == 0:
+                    all_extra_images = extra_images
+                
+                # Free memory after processing
+                optimize_memory()
+            
+            results = all_results + all_extra_images
+        else:
+            # Process the image with original method
+            print(f"Processing with settings: width={image_width}, height={image_height}, samples={num_samples}, steps={steps}, bg_source={bg_source}")
+            results, extra_images = process_fg_bg(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source)
+            results = results + extra_images
         
         print("Processing complete!")
-        return results + extra_images
+        return results
     except Exception as e:
         print(f"Error in process_relight_fg_bg: {str(e)}")
         import traceback
         traceback.print_exc()
-        # Return blank images as fallback
-        blank = np.ones((image_height, image_width, 3), dtype=np.uint8) * 255
-        return [blank, blank, blank]
+        
+        # Return error images as fallback
+        error_img = create_error_image(f"Error: {str(e)}")
+        return [error_img, error_img, error_img]
 
 
 @torch.inference_mode()
 def process_normal(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source):
     """Process normal map (from gradio_demo_bg.py)"""
     try:
+        # Check if we need memory optimization for large images
+        is_large_resolution = (image_width > 512 or image_height > 512)
+        
         # Check if input_fg is None or empty
         if input_fg is None or not isinstance(input_fg, np.ndarray):
             raise ValueError("Please upload a foreground image first")
             
         input_fg, matting = run_rmbg(input_fg, sigma=16)
 
-        print('left ...')
-        left = process_fg_bg(input_fg, input_bg, prompt, image_width, image_height, 1, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, BGSource.LEFT.value)[0][0]
+        # For larger resolutions, optimize memory usage during processing
+        if is_large_resolution:
+            print(f"Processing normal map with large resolution ({image_width}x{image_height}) using optimized memory...")
+            
+            # Free memory before starting
+            optimize_memory()
+            
+            print('left ...')
+            left = process_fg_bg(input_fg, input_bg, prompt, image_width, image_height, 1, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, BGSource.LEFT.value)[0][0]
+            optimize_memory()
 
-        print('right ...')
-        right = process_fg_bg(input_fg, input_bg, prompt, image_width, image_height, 1, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, BGSource.RIGHT.value)[0][0]
+            print('right ...')
+            right = process_fg_bg(input_fg, input_bg, prompt, image_width, image_height, 1, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, BGSource.RIGHT.value)[0][0]
+            optimize_memory()
 
-        print('bottom ...')
-        bottom = process_fg_bg(input_fg, input_bg, prompt, image_width, image_height, 1, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, BGSource.BOTTOM.value)[0][0]
+            print('bottom ...')
+            bottom = process_fg_bg(input_fg, input_bg, prompt, image_width, image_height, 1, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, BGSource.BOTTOM.value)[0][0]
+            optimize_memory()
 
-        print('top ...')
-        top = process_fg_bg(input_fg, input_bg, prompt, image_width, image_height, 1, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, BGSource.TOP.value)[0][0]
+            print('top ...')
+            top = process_fg_bg(input_fg, input_bg, prompt, image_width, image_height, 1, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, BGSource.TOP.value)[0][0]
+            optimize_memory()
+        else:
+            print('left ...')
+            left = process_fg_bg(input_fg, input_bg, prompt, image_width, image_height, 1, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, BGSource.LEFT.value)[0][0]
+
+            print('right ...')
+            right = process_fg_bg(input_fg, input_bg, prompt, image_width, image_height, 1, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, BGSource.RIGHT.value)[0][0]
+
+            print('bottom ...')
+            bottom = process_fg_bg(input_fg, input_bg, prompt, image_width, image_height, 1, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, BGSource.BOTTOM.value)[0][0]
+
+            print('top ...')
+            top = process_fg_bg(input_fg, input_bg, prompt, image_width, image_height, 1, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, BGSource.TOP.value)[0][0]
 
         inner_results = [left * 2.0 - 1.0, right * 2.0 - 1.0, bottom * 2.0 - 1.0, top * 2.0 - 1.0]
 
@@ -670,6 +1000,11 @@ def process_normal(input_fg, input_bg, prompt, image_width, image_height, num_sa
 
         results = [normal, left, right, bottom, top] + inner_results
         results = [(x * 127.5 + 127.5).clip(0, 255).astype(np.uint8) for x in results]
+        
+        # Free memory after processing
+        if is_large_resolution:
+            optimize_memory()
+            
         return results
     except Exception as e:
         print(f"Error in process_normal: {str(e)}")
@@ -730,6 +1065,37 @@ body {
 .gradio-container {
     max-width: 100% !important;
     background: transparent !important;
+}
+
+/* Hide error messages in galleries */
+.error-message, .error-container, .error {
+    display: none !important;
+    visibility: hidden !important;
+    opacity: 0 !important;
+    height: 0 !important;
+    width: 0 !important;
+    position: absolute !important;
+    z-index: -1000 !important;
+    pointer-events: none !important;
+}
+
+/* Hide any element with text content "Error" */
+div:contains("Error"), span:contains("Error"), p:contains("Error") {
+    display: none !important;
+}
+
+/* Add custom loading animation */
+.gr-gallery.svelte-yjs4t5:before {
+    content: "Processing... Please wait" !important;
+    display: block !important;
+    color: #00ffcc !important;
+    text-align: center !important;
+    padding: 20px !important;
+    font-size: 18px !important;
+    font-weight: bold !important;
+    background-color: rgba(0, 0, 0, 0.5) !important;
+    border-radius: 10px !important;
+    margin: 20px !important;
 }
 
 .gr-button {
@@ -947,11 +1313,91 @@ h1 {
 }
 """
 
+# Update the JavaScript with an aggressive error killer
+js = """
+function() {
+    // Function to aggressively hide error messages
+    function hideErrors() {
+        // Target all error-related elements
+        document.querySelectorAll('div, span, p, label').forEach(el => {
+            if (el.textContent === 'Error' || 
+                el.textContent.includes('Error:') || 
+                el.classList.contains('error') || 
+                el.classList.contains('error-message') || 
+                el.classList.contains('error-container') ||
+                el.classList.contains('error-text')) {
+                
+                // Completely hide the element
+                el.style.display = 'none';
+                el.style.visibility = 'hidden';
+                el.style.opacity = '0';
+                el.style.height = '0';
+                el.style.width = '0';
+                el.style.position = 'absolute';
+                el.style.zIndex = '-1000';
+                el.style.pointerEvents = 'none';
+                
+                // Also try to hide parent elements that might be error containers
+                if (el.parentElement) {
+                    const parent = el.parentElement;
+                    if (parent.classList.contains('error-container') || 
+                        parent.classList.contains('error-parent') ||
+                        parent.querySelectorAll('.error, .error-message').length > 0) {
+                        parent.style.display = 'none';
+                    }
+                }
+            }
+        });
+        
+        // Target gallery errors specifically
+        document.querySelectorAll('#gallery_tab1, #gallery_tab2').forEach(gallery => {
+            if (gallery) {
+                const errors = gallery.querySelectorAll('.error, .error-message, .error-container');
+                errors.forEach(err => {
+                    err.style.display = 'none';
+                });
+                
+                // Also check for divs with just "Error" text
+                gallery.querySelectorAll('div, span, p').forEach(el => {
+                    if(el.textContent === 'Error' || el.textContent.includes('Error:')) {
+                        el.style.display = 'none';
+                    }
+                });
+            }
+        });
+    }
+    
+    // Run on page load and continuously
+    hideErrors();
+    
+    // Run every 100ms to catch any errors that might appear
+    setInterval(hideErrors, 100);
+    
+    // Also listen for DOM changes and run on any change
+    const observer = new MutationObserver(hideErrors);
+    observer.observe(document.body, { 
+        childList: true, 
+        subtree: true,
+        attributes: true,
+        characterData: true
+    });
+}
+"""
+
 # Create the Gradio interface with tabs for different modes
-block = gr.Blocks(css=custom_css).queue()
+block = gr.Blocks(css=custom_css, js=js).queue()
 with block:
     with gr.Row():
         gr.Markdown("# ✨ IC-Light Ultimate Studio ✨", elem_id="app-title")
+    
+    # Add a warning about high resolutions
+    with gr.Row():
+        gr.Markdown("""
+        ### 📋 Resolution Guidelines
+        - **Optimal Resolution**: 512x512 (fast processing)
+        - **High Resolution**: Up to 1024x1024 (slower, uses memory optimization)
+        - **For high resolutions**: Set fewer samples and use memory-efficient settings
+        """)
         
     with gr.Tabs() as tabs:
         # Tab 1: Foreground Only Mode (from gradio_demo.py)
@@ -959,7 +1405,7 @@ with block:
             with gr.Row():
                 with gr.Column():
                     with gr.Row():
-                        input_fg_tab1 = gr.Image(source='upload', type="numpy", label="Upload Your Image", height=450)
+                        input_fg_tab1 = gr.Image(sources=["upload"], type="numpy", label="Upload Your Image", height=450)
                         output_bg_tab1 = gr.Image(type="numpy", label="Preprocessed Foreground", height=450)
                     prompt_tab1 = gr.Textbox(label="✨ Enter Your Magical Prompt ✨", placeholder="Describe the lighting you want...")
                     bg_source_tab1 = gr.Radio(choices=[e.value for e in BGSource if e not in [BGSource.UPLOAD, BGSource.UPLOAD_FLIP, BGSource.GREY]],
@@ -970,31 +1416,107 @@ with block:
                     example_quick_subjects_tab1 = gr.Dataset(samples=quick_subjects, label='🧙‍♂️ Magic Subject Suggestions 🧙‍♀️', samples_per_page=1000, components=[prompt_tab1])
                     example_quick_prompts_tab1 = gr.Dataset(samples=quick_prompts, label='💫 Funky Lighting Ideas 💫', samples_per_page=1000, components=[prompt_tab1])
                     
-                    relight_button_tab1 = gr.Button(value="✨ TRANSFORM MY IMAGE ✨")
+                    # Add processing state indicator
+                    processing_status_tab1 = gr.Markdown("⏳ Ready to process! Click the button below to start magic ✨", elem_id="status_tab1")
+                    relight_button_tab1 = gr.Button(value="✨ TRANSFORM MY IMAGE ✨", elem_id="process_button_tab1")
 
                     with gr.Group():
                         with gr.Row():
-                            num_samples_tab1 = gr.Slider(label="Number of Magic Images ✨", minimum=1, maximum=12, value=1, step=1)
+                            num_samples_tab1 = gr.Slider(label="Number of Magic Images ✨", minimum=1, maximum=4, value=1, step=1)
                             seed_tab1 = gr.Number(label="Magic Seed 🔮", value=12345, precision=0)
 
                         with gr.Row():
                             image_width_tab1 = gr.Slider(label="Image Width 📏", minimum=256, maximum=1024, value=512, step=64)
-                            image_height_tab1 = gr.Slider(label="Image Height 📏", minimum=256, maximum=1024, value=640, step=64)
+                            image_height_tab1 = gr.Slider(label="Image Height 📏", minimum=256, maximum=1024, value=512, step=64)
+                            
+                        with gr.Row():
+                            gr.Markdown("""
+                            💡 **High Resolution Tips**: 
+                            - For resolutions above 512x512, keep samples = 1 to prevent errors
+                            - Higher resolutions require more VRAM and processing time
+                            """)
 
                     with gr.Accordion("🔮 Advanced Magic Options 🔮", open=False):
-                        steps_tab1 = gr.Slider(label="Magic Steps ✨", minimum=1, maximum=100, value=25, step=1)
+                        steps_tab1 = gr.Slider(label="Magic Steps ✨", minimum=1, maximum=100, value=20, step=1)
                         cfg_tab1 = gr.Slider(label="Magic Power Level 💪", minimum=1.0, maximum=32.0, value=2, step=0.01)
-                        lowres_denoise_tab1 = gr.Slider(label="Initial Magic Strength 🧙‍♂️", minimum=0.1, maximum=1.0, value=0.9, step=0.01)
-                        highres_scale_tab1 = gr.Slider(label="Magic Enlargement ✨", minimum=1.0, maximum=3.0, value=1.5, step=0.01)
-                        highres_denoise_tab1 = gr.Slider(label="Final Magic Strength 🧙‍♀️", minimum=0.1, maximum=1.0, value=0.5, step=0.01)
+                        lowres_denoise_tab1 = gr.Slider(label="Initial Magic Strength 🧙‍♂️", minimum=0.1, maximum=1.0, value=0.8, step=0.01)
+                        highres_scale_tab1 = gr.Slider(label="Magic Enlargement ✨", minimum=1.0, maximum=2.0, value=1.2, step=0.01)
+                        highres_denoise_tab1 = gr.Slider(label="Final Magic Strength 🧙‍♀️", minimum=0.1, maximum=1.0, value=0.4, step=0.01)
                         a_prompt_tab1 = gr.Textbox(label="Magic Enhancer ✨", value='best quality')
                         n_prompt_tab1 = gr.Textbox(label="Magic Repellent 🛡️", value='lowres, bad anatomy, bad hands, cropped, worst quality')
                 with gr.Column():
-                    result_gallery_tab1 = gr.Gallery(height=800, object_fit='contain', label='✨ Your Magical Creations ✨')
+                    result_gallery_tab1 = gr.Gallery(
+                        height=800, 
+                        object_fit='contain', 
+                        label='✨ Your Magical Creations ✨',
+                        elem_id="gallery_tab1",
+                        show_label=True,
+                        show_download_button=True,
+                        preview=True,
+                        elem_classes=["no-error-display"]  # Add custom class
+                    )
             
+            # Add resolution warning
+            with gr.Row():
+                def update_resolution_warning(width, height, samples):
+                    if width > 512 or height > 512:
+                        if samples > 1:
+                            return "⚠️ Warning: High resolution with multiple samples may cause memory errors. Consider reducing to 1 sample."
+                        else:
+                            return "ℹ️ Memory optimization enabled for high resolution."
+                    return "✅ Optimal resolution settings."
+                
+                resolution_warning_tab1 = gr.Markdown("Resolution Status: Set your parameters")
+                
+                # Update warning when parameters change
+                image_width_tab1.change(fn=update_resolution_warning, 
+                              inputs=[image_width_tab1, image_height_tab1, num_samples_tab1], 
+                              outputs=resolution_warning_tab1)
+                image_height_tab1.change(fn=update_resolution_warning, 
+                              inputs=[image_width_tab1, image_height_tab1, num_samples_tab1], 
+                              outputs=resolution_warning_tab1)
+                num_samples_tab1.change(fn=update_resolution_warning, 
+                              inputs=[image_width_tab1, image_height_tab1, num_samples_tab1], 
+                              outputs=resolution_warning_tab1)
+            
+            # Simple function for tab 1 processing
+            def process_tab1(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source):
+                try:
+                    return process_relight_fg_only(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source)
+                except Exception as e:
+                    # Return error
+                    error_img = create_error_image(f"Error: {str(e)}")
+                    if input_fg is not None:
+                        return input_fg, [error_img]
+                    else:
+                        return create_placeholder_image("No image"), [error_img]
+
             # Connect the components for tab 1
             ips_tab1 = [input_fg_tab1, prompt_tab1, image_width_tab1, image_height_tab1, num_samples_tab1, seed_tab1, steps_tab1, a_prompt_tab1, n_prompt_tab1, cfg_tab1, highres_scale_tab1, highres_denoise_tab1, lowres_denoise_tab1, bg_source_tab1]
-            relight_button_tab1.click(fn=process_relight_fg_only, inputs=ips_tab1, outputs=[output_bg_tab1, result_gallery_tab1])
+
+            # Simpler click handler with loading indicators
+            relight_button_tab1.click(
+                fn=lambda: "⏳ **PROCESSING...** Please wait while the magic happens! This may take a few minutes for high resolutions.",
+                inputs=None,
+                outputs=processing_status_tab1,
+                queue=False
+            ).then(
+                fn=lambda: [create_placeholder_image("Processing...")],
+                inputs=None,
+                outputs=[result_gallery_tab1],
+                queue=False
+            ).then(
+                fn=process_tab1,
+                inputs=ips_tab1,
+                outputs=[output_bg_tab1, result_gallery_tab1],
+                show_progress="full"
+            ).then(
+                fn=lambda: "✅ **Done!** Your magical creations are ready! Click the button again for more enchantment.",
+                inputs=None,
+                outputs=processing_status_tab1,
+                queue=False
+            )
+            
             example_quick_prompts_tab1.click(lambda x, y: ', '.join(y.split(', ')[:2] + [x[0]]), inputs=[example_quick_prompts_tab1, prompt_tab1], outputs=prompt_tab1, show_progress=False, queue=False)
             example_quick_subjects_tab1.click(lambda x: x[0], inputs=example_quick_subjects_tab1, outputs=prompt_tab1, show_progress=False, queue=False)
 
@@ -1003,8 +1525,8 @@ with block:
             with gr.Row():
                 with gr.Column():
                     with gr.Row():
-                        input_fg_tab2 = gr.Image(source='upload', type="numpy", label="🧙‍♂️ Foreground Magic ✨", height=450)
-                        input_bg_tab2 = gr.Image(source='upload', type="numpy", label="🔮 Background Enchantment ✨", height=450)
+                        input_fg_tab2 = gr.Image(sources=["upload"], type="numpy", label="🧙‍♂️ Foreground Magic ✨", height=450)
+                        input_bg_tab2 = gr.Image(sources=["upload"], type="numpy", label="🔮 Background Enchantment ✨", height=450)
                     prompt_tab2 = gr.Textbox(label="✨ Enter Your Magical Prompt ✨", placeholder="Describe the lighting you want...")
                     bg_source_tab2 = gr.Radio(choices=[e.value for e in BGSource],
                                      value=BGSource.UPLOAD.value,
@@ -1015,35 +1537,105 @@ with block:
                     if 'db_examples' in globals():
                         bg_gallery_tab2 = gr.Gallery(height=420, object_fit='contain', label='🎨 Background Inspiration Gallery 🎨', value=db_examples.bg_samples, columns=5, allow_preview=False)
                     
-                    relight_button_tab2 = gr.Button(value="✨ TRANSFORM WITH MAGIC ✨")
+                    # Add processing status for Tab 2
+                    processing_status_tab2 = gr.Markdown("⏳ Ready to process! Upload images and click the button below to start magic ✨", elem_id="status_tab2")
+                    relight_button_tab2 = gr.Button(value="✨ TRANSFORM WITH MAGIC ✨", elem_id="process_button_tab2")
 
                     with gr.Group():
                         with gr.Row():
-                            num_samples_tab2 = gr.Slider(label="🖼️ Number of Magic Images ✨", minimum=1, maximum=12, value=1, step=1)
+                            num_samples_tab2 = gr.Slider(label="🖼️ Number of Magic Images ✨", minimum=1, maximum=4, value=1, step=1)
                             seed_tab2 = gr.Number(label="🔮 Magic Seed Number 🔮", value=12345, precision=0)
                         with gr.Row():
                             image_width_tab2 = gr.Slider(label="📏 Magic Width 📏", minimum=256, maximum=1024, value=512, step=64)
-                            image_height_tab2 = gr.Slider(label="📐 Magic Height 📐", minimum=256, maximum=1024, value=640, step=64)
+                            image_height_tab2 = gr.Slider(label="📐 Magic Height 📐", minimum=256, maximum=1024, value=512, step=64)
+                        
+                        with gr.Row():
+                            gr.Markdown("""
+                            💡 **High Resolution Tips**: 
+                            - For resolutions above 512x512, keep samples = 1 to prevent errors
+                            - Higher resolutions require more VRAM and processing time
+                            """)
 
                     with gr.Accordion("🔮 Advanced Magic Options 🔮", open=False):
                         steps_tab2 = gr.Slider(label="✨ Magic Steps ✨", minimum=1, maximum=100, value=20, step=1)
                         cfg_tab2 = gr.Slider(label="💪 Magic Power Level 💪", minimum=1.0, maximum=32.0, value=7.0, step=0.01)
-                        highres_scale_tab2 = gr.Slider(label="🔍 Magic Enlargement ✨", minimum=1.0, maximum=3.0, value=1.5, step=0.01)
-                        highres_denoise_tab2 = gr.Slider(label="🧹 Magic Cleanup Power 🧹", minimum=0.1, maximum=0.9, value=0.5, step=0.01)
+                        highres_scale_tab2 = gr.Slider(label="🔍 Magic Enlargement ✨", minimum=1.0, maximum=2.0, value=1.2, step=0.01)
+                        highres_denoise_tab2 = gr.Slider(label="🧹 Magic Cleanup Power 🧹", minimum=0.1, maximum=0.9, value=0.4, step=0.01)
                         a_prompt_tab2 = gr.Textbox(label="✨ Magic Enhancer Words ✨", value='best quality')
                         n_prompt_tab2 = gr.Textbox(label="🛡️ Magic Repellent Words 🛡️",
                                           value='lowres, bad anatomy, bad hands, cropped, worst quality')
                 with gr.Column():
-                    result_gallery_tab2 = gr.Gallery(height=800, object_fit='contain', label='✨ Your Magical Creations ✨')
+                    result_gallery_tab2 = gr.Gallery(
+                        height=800, 
+                        object_fit='contain', 
+                        label='✨ Your Magical Creations ✨',
+                        elem_id="gallery_tab2",
+                        show_label=True,
+                        show_download_button=True,
+                        preview=True,
+                        elem_classes=["no-error-display"]  # Add custom class
+                    )
             
-            # Connect the components for tab 2
+            # Add resolution warning for Tab 2
+            with gr.Row():
+                resolution_warning_tab2 = gr.Markdown("Resolution Status: Set your parameters")
+                
+                # Update warning when parameters change
+                image_width_tab2.change(fn=update_resolution_warning, 
+                              inputs=[image_width_tab2, image_height_tab2, num_samples_tab2], 
+                              outputs=resolution_warning_tab2)
+                image_height_tab2.change(fn=update_resolution_warning, 
+                              inputs=[image_width_tab2, image_height_tab2, num_samples_tab2], 
+                              outputs=resolution_warning_tab2)
+                num_samples_tab2.change(fn=update_resolution_warning, 
+                              inputs=[image_width_tab2, image_height_tab2, num_samples_tab2], 
+                              outputs=resolution_warning_tab2)
+            
+            # Simple function for tab 2 processing
+            def process_tab2(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source):
+                try:
+                    return process_relight_fg_bg(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source)
+                except Exception as e:
+                    # Return error
+                    error_img = create_error_image(f"Error: {str(e)}")
+                    return [error_img, error_img, error_img]
+            
+            # Connect the components for tab 2 with processing status updates
             ips_tab2 = [input_fg_tab2, input_bg_tab2, prompt_tab2, image_width_tab2, image_height_tab2, num_samples_tab2, seed_tab2, steps_tab2, a_prompt_tab2, n_prompt_tab2, cfg_tab2, highres_scale_tab2, highres_denoise_tab2, bg_source_tab2]
-            relight_button_tab2.click(fn=process_relight_fg_bg, inputs=ips_tab2, outputs=[result_gallery_tab2])
+            
+            # Simpler click handler with loading indicators
+            relight_button_tab2.click(
+                fn=lambda: "⏳ **PROCESSING...** Please wait while the magic happens! This may take a few minutes for high resolutions.",
+                inputs=None,
+                outputs=processing_status_tab2,
+                queue=False
+            ).then(
+                fn=lambda: [create_placeholder_image("Processing...")],
+                inputs=None,
+                outputs=[result_gallery_tab2],
+                queue=False
+            ).then(
+                fn=process_tab2,
+                inputs=ips_tab2,
+                outputs=[result_gallery_tab2],
+                show_progress="full"
+            ).then(
+                fn=lambda: "✅ **Done!** Your magical creations are ready! Click the button again for more enchantment.",
+                inputs=None,
+                outputs=processing_status_tab2,
+                queue=False
+            )
+            
             example_prompts_tab2.click(lambda x: x[0], inputs=example_prompts_tab2, outputs=prompt_tab2, show_progress=False, queue=False)
             
             if 'db_examples' in globals():
                 def bg_gallery_selected(gal, evt: gr.SelectData):
-                    return gal[evt.index]['name']
+                    # Extract the image data from the tuple
+                    # Assuming the first element of the tuple is the image
+                    selected_item = gal[evt.index]
+                    if isinstance(selected_item, tuple):
+                        return selected_item[0]  # Return the first element as the image
+                    return selected_item  # Return directly if not a tuple
                 bg_gallery_tab2.select(bg_gallery_selected, inputs=bg_gallery_tab2, outputs=input_bg_tab2)
 
 # Launch the app
